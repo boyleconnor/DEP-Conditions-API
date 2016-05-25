@@ -15,7 +15,7 @@ DEP ----: Conditions API
    :local:
 
 Team
-----
+====
 
 Author
     - Connor Boyle (cboyle at macalester dot e.d.u.)
@@ -192,7 +192,7 @@ The Implementation Part One - The Core
 --------------------------------------
 
 ConditionResults
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
 
 ``ConditionResult`` would be the simplest concept/code introduced in the API.
 Simply put, it would be a data structure used to convey:
