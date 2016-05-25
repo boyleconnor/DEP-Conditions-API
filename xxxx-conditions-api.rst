@@ -67,16 +67,17 @@ their methods, as well as their key differences with this proposal.
 Django Rest Framework
 ---------------------
 
-`Django Rest Framework<http://www.django-rest-framework.org/>`_, a package
-for building RESTful web APIs (generally for AJAX), also provides its own
-`dynamic authorization
-system<http://www.django-rest-framework.org/api-guide/permissions/>`_.
+`Django Rest Framework <http://www.django-rest-framework.org/>`_, a package for
+building RESTful web APIs (generally for AJAX), also provides its own `dynamic
+authorization system
+<http://www.django-rest-framework.org/api-guide/permissions/>`_.
 
 One inconsistency in this framework is that the developer is encouraged to base
 the results of these dynamic permissions on the method of the request (and
 therefore to make assumptions about what a particular method "does"). This is
 evidenced by some of the default "Permissions" provided by the package, namely
-`IsAuthenticatedOrReadOnly<http://www.django-rest-framework.org/api-guide/permissions/#isauthenticatedorreadonly>`_.
+`IsAuthenticatedOrReadOnly
+<http://www.django-rest-framework.org/api-guide/permissions/#isauthenticatedorreadonly>`_.
 The problem with this design pattern (authentication based on HTTP method) is
 that it includes information about an action to determine whether a user is
 allowed to perform an application, breaking clean encapsulation that otherwise
@@ -90,7 +91,7 @@ to, say, in a template to determine whether a link should be displayed).
 Django Rules
 ------------
 
-`Django-Rules<https://github.com/dfunckt/django-rules>`_ (indeed it does)
+`Django-Rules <https://github.com/dfunckt/django-rules>`_ (indeed it does)
 provides a framework for the sole purpose of defining and implementing these
 dynamic permissions, which it calls "rules". The package's inner workings tie
 it closely to Django's default database-backed permissions system; the package
