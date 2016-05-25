@@ -157,7 +157,7 @@ the following behavior is not overridden by the developer) it will raise a
 by a method ``conditions.UserObjectCondition`` or
 ``conditions.UserPermissionCondition``, or both, if they both failed.
 
-*Raising ``PermissionDenied`` is, of course, a security issue in certain cases.
+*Raising* ``PermissionDenied`` *is, of course, a security issue in certain cases.
 Therefore, a way of producing mere 404 errors when appropriate is detailed later
 in this proposal.*
 
@@ -175,6 +175,7 @@ permissions-based or
 
    The rationale should provide evidence of consensus within the community and
    discuss important objections or concerns raised during discussion.
+
 
 #. Reference Implementation -- The reference implementation must be completed
    before any DEP is given status "Final", but it need not be completed before
