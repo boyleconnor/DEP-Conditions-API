@@ -379,6 +379,7 @@ developers to use for authorization in their function-based views:
                 pass
 
    Some idea of how the decorator would be implemented, in decorators.py::
+
         import inspect
         from django.contrib.conditions import shortcuts
 
