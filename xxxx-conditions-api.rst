@@ -190,8 +190,8 @@ permissions-based or
 Draft Implementation
 ====================
 
-The Implementation Part One - The Core
---------------------------------------
+The Core
+--------
 
 ConditionResults
 ~~~~~~~~~~~~~~~~
@@ -275,8 +275,8 @@ return ``True``, while ``AnyCondition`` would return ``True`` if any of its
 member Conditions return ``True``.  The Condition combiners would of course be
 nestable.
 
-Implementation Part Two - The Hooks
------------------------------------
+The Hooks
+---------
 
 Class-based View Mixins
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -336,17 +336,35 @@ developers to use for authorization in their function-based views:
    ``Http404`` exception. If all of those pass, and then any Condition in
    ``execute`` fails, it will raise a ``PermissionDenied``.
 
-2. ``@check_conditions``, a decorator (same name, different module) whose
-   functionality is primarily achieved by calling the above-described function.
-   It determines the value of ``kwargs`` by a developer-defined function
-   provided through as an argument for the parameter ``get_kwargs``. Unlike in
-   Django-Rules's version, however, the result of ``get_kwargs`` is then passed
-   to the wrapped function-based view. Through this pattern, the object needn't
-   be retrieved from the database twice, and the problems that could arise from
-   a technique involving duplication of logic are mitigated because there is no
+   Reference implementation::
+
+        from django.http import Http404
+        from django.core.exceptions import PermissionDenied
+
+
+        def check_conditions(condition_kwargs, access, execute):
+                for condition in access:
+                        if not condition.run(**condition_kwargs):
+                                raise Http404
+                results = []
+                for condition in execute:
+                        results.append(condition.run(**condition_kwargs))
+                if not all(results):
+                        combined_message = [result.message for result in results if not result.passed]
+                        raise PermissionDenied()
+
+2. ``@condition_protected``, a decorator whose functionality is primarily
+   achieved by calling the above-described function.  It determines the value
+   of ``kwargs`` by a developer-defined function provided through as an
+   argument for the parameter ``get_kwargs``. Unlike in Django-Rules's version,
+   however, the result of ``get_kwargs`` is then passed to the wrapped
+   function-based view. Through this pattern, the object needn't be retrieved
+   from the database twice, and the problems that could arise from a technique
+   involving duplication of logic are mitigated because there is no
    duplication.
 
 ::
+
         from django.contrib.conditions.decorators import check_conditions
         from django.shortcuts import get_object_object_or_404
         from Bookclubs.models import *
@@ -356,7 +374,7 @@ developers to use for authorization in their function-based views:
                 return {'user': request.user, 'club': get_object_object_or_404(Club, pk=pk)}
 
 
-        @check_conditions(access=(IsAuthenticated,), execute=(InClub,), get_kwargs=get_club)
+        @condition_protected(access=(IsAuthenticated,), execute=(InClub,), get_kwargs=get_club)
         def club_detail(request, club):
                 pass
 
@@ -365,11 +383,17 @@ developers to use for authorization in their function-based views:
         from django.contrib.conditions import shortcuts
 
 
-        def check_conditions(view, access, execute, get_kwargs):
+        def condition_protected(view, access, execute, get_kwargs):
                 def wrapped_view(request, *args, **kwargs):
                         condition_kwargs = get_kwargs(request, *args, **kwargs)
-                        kwargs.update(condition_kwargs, *args, **kwargs)
+                        shortcuts.check_conditions(condition_kwargs, access, execute)
                         inspection = inspect.getargspec(view)
+                        if inspection.keywords:
+                                kwargs.update(condition_kwargs, *args, **kwargs)
+                        else:
+                                for kwarg in condition_kwargs.keys():
+                                        if kwarg in inspection.args:
+                                                kwargs[kwarg] = condition_kwargs[kwarg]
                         return view(request, *args, **kwargs)
                 return wrapped_view
 
