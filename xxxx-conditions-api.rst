@@ -157,38 +157,14 @@ the following behavior is not overridden by the developer) it will raise a
 by a method ``conditions.UserObjectCondition`` or
 ``conditions.UserPermissionCondition``, or both, if they both failed.
 
-*Raising* ``PermissionDenied`` *is, of course, a security issue in certain cases.
-Therefore, a way of producing mere 404 errors when appropriate is detailed later
-in this proposal.*
+Raising ``PermissionDenied`` is, of course, a security issue in certain cases.
+Therefore, when appropriate, conditions required to perform an action will be
+divided into 'access' conditions and 'execute' conditions. The 'access'
+conditions must be passed first or else the attempted action will result in a
+mere "Page not found" or equivalent appropriate error.
 
-Rationale
-=========
-
-An object-oriented design standard for the Conditions themselves (rather than a
-function-based one) was selected in order for the API to provide
-easily-extendable default Conditions for common usage cases (e.g.
-permissions-based or 
-
-#. Rationale -- The rationale fleshes out the specification by describing what
-   motivated the design and why particular design decisions were made.  It
-   should describe alternate designs that were considered and related work.
-
-   The rationale should provide evidence of consensus within the community and
-   discuss important objections or concerns raised during discussion.
-
-
-#. Reference Implementation -- The reference implementation must be completed
-   before any DEP is given status "Final", but it need not be completed before
-   the DEP is accepted.  While there is merit to the approach of reaching
-   consensus on the specification and rationale before writing code, the
-   principle of "rough consensus and running code" is still useful when it comes
-   to resolving many discussions of API details.
-
-   The final implementation must include tests and documentation, per Django's
-   `contribution guidelines <https://docs.djangoproject.com/en/dev/internals/contributing/>`_.
-
-Draft Implementation
-====================
+Implementation
+==============
 
 The Core
 --------
@@ -237,27 +213,27 @@ BaseCondition's basic structure would be roughly as follows::
                 def evaluate(self, **kwargs):
                         raise NotImplementedError()
 
-                def check_kwargs(self, kwargs):
-                        missing_kwargs = []
-                        for kwarg in self.kwargs:
-                                if kwarg not in kwargs:
-                                        missing_kwargs += [kwarg]
-                        if missing_kwargs:
-                                raise ValueError('Missing keyword arguments: %s' % str(missing_kwargs))
-
-                def run(self, **kwargs):
-                        self.check_kwargs(kwargs)
-                        result = self.evaluate(**kwargs)
+                def check(self, **kwargs):
+                        relevant_kwargs = {}
+                        inspection = inspect.getargspec(self.evaluate)
+                        if inspection.keywords:
+                                relevant_kwargs = kwargs
+                        else:
+                                for kwarg in kwargs:
+                                        if kwarg in inspection.args:
+                                                relevant_kwargs[kwarg] = kwargs[kwarg]
+                        result = self.evaluate(**relevant_kwargs)
                         if result:
                                 return ConditionResult(passed=True, condition=self, kwargs=kwargs)
                         return ConditionResult(passed=False, message=self.get_massage(**kwargs_to_check), condition=self, kwargs=kwargs)
 
-Put simply, ``run()`` provides a hook for the invoker of the condition to,
-well, run the condition, by passing the keyword arguments necessary for the
-condition to evaluate (which, in the vast majority of cases, would be either
-``user`` or both ``user`` and ``object``). ``evaluate()``, on the other hand,
-would be a hook for the developer (or sub-classes for common usage cases) to
-override in order to define the meaningful logic of the condition.
+Put simply, ``check()`` provides a hook for the invoker of the condition to run
+the condition and return a ``ConditionResult``, by passing the keyword
+arguments necessary for the condition to evaluate (which, in the vast majority
+of cases, would be either ``user`` or both ``user`` and ``object``).
+``evaluate()``, on the other hand, would be a hook for the developer (or
+sub-classes for common usage cases) to override in order to define the
+meaningful logic of the condition.
 
 Combiners
 ~~~~~~~~~~~
@@ -304,10 +280,10 @@ Helper Function
 ~~~~~~~~~~~~~~~
 
 As for function-based views, since Conditions are essentially just fancy
-functions, developers could easily write their own logic based on their
-conditions. The API, however, *would* provide a helper function that would
-run the given Condition(s) and handle the Auth-related issues (redirect to
-login, etc.) on failure. It would also allow the developer to provide callback
+functions, developers could easily write their own code that utilizes their
+conditions. The API, however, *would* provide a helper function that would run
+the given Condition(s) and handle the Auth-related issues (redirect to login,
+etc.) on failure. It would also allow the developer to provide callback
 functions to modify default behavior.
 
 Django-Rules's technique of using a decorator presents issues when the
@@ -340,6 +316,7 @@ developers to use for authorization in their function-based views:
 
         from django.http import Http404
         from django.core.exceptions import PermissionDenied
+        from django.contrib.conditions.combiners import EveryCondition
 
 
         def check_conditions(condition_kwargs, access, execute):
@@ -347,23 +324,21 @@ developers to use for authorization in their function-based views:
                         if not condition.run(**condition_kwargs):
                                 raise Http404
                 results = []
-                for condition in execute:
-                        results.append(condition.run(**condition_kwargs))
-                if not all(results):
-                        combined_message = [result.message for result in results if not result.passed]
-                        raise PermissionDenied()
+                execute_conditions = EveryCondition(conditions=execute)
+                execute_conditions_result = execute_conditions.check(**condition_kwargs)
+                if not execute_conditions_result.passed:
+                        raise PermissionDenied(execute_conditions_result.message)
 
 2. ``@condition_protected``, a decorator whose functionality is primarily
    achieved by calling the above-described function.  It determines the value
-   of ``kwargs`` by a developer-defined function provided through as an
-   argument for the parameter ``get_kwargs``. Unlike in Django-Rules's version,
-   however, the result of ``get_kwargs`` is then passed to the wrapped
-   function-based view. Through this pattern, the object needn't be retrieved
-   from the database twice, and the problems that could arise from a technique
-   involving duplication of logic are mitigated because there is no
-   duplication.
+   of ``kwargs`` by a developer-defined function provided as an argument for
+   the parameter ``get_kwargs``. Unlike in Django-Rules's version, however, the
+   result of ``get_kwargs`` is then passed to the wrapped function-based view.
+   Through this pattern, the object needn't be retrieved from the database
+   twice, and the problems that could arise from a technique involving
+   duplication of logic are mitigated because there is no duplication.
 
-::
+    It would be used as in the following example::
 
         from django.contrib.conditions.decorators import check_conditions
         from django.shortcuts import get_object_object_or_404
@@ -378,7 +353,7 @@ developers to use for authorization in their function-based views:
         def club_detail(request, club):
                 pass
 
-Some idea of how the decorator would be implemented, in decorators.py::
+Reference Implementation::
 
         import inspect
         from django.contrib.conditions import shortcuts
@@ -398,46 +373,58 @@ Some idea of how the decorator would be implemented, in decorators.py::
                         return view(request, *args, **kwargs)
                 return wrapped_view
 
-ModelAdmin Mixin
-~~~~~~~~~~~~~~~~
+Template Tags
+~~~~~~~~~~~~~
 
-This would admittedly be the least-useful hook of the bunch, as ``ModelAdmin``
-itself is thankfully already very easy to extend with dynamic logic to limit
-access. Still, the mixin provided by this project would at least allow
-developers to neatly organize their Conditions into tuples stored in a class
-attribute.
+The project would include template tags that would allow the developer to test
+their conditions within their templates. Like the view mixin or the view
+decorator, the tag would accept a series of Conditions, which would then all be
+tested. The keyword arguments that Conditions must be given in order to pass
+may be provided as keyword arguments in the tag. In all pracdtical cases, the
+developer would utilize the result by storing it in a template context variable
+using the ``as`` keyword.
 
-**RESOLVE**: Should this mixin default to also requiring the proper
-Django model permissions, as the vanilla ModelAdmin does?)
+In order for these Conditions (the Condtions themselves, not their results) to
+be accessible within the template context, Conditions could be passed to the
+template context on a per-view basis. However, because this technique
+necessarily increases coupling of views and templates, this project will
+include and through documentation prescribe the use of a template context
+processor. Said context processor will work by going through each member of
+``INSTALLED_APPS``, and from each one's ``.conditions`` module including every
+object that is a subtype of ``BaseCondition`` in a dictionary ``conditions``.
+         
+Example usage::
+        {% check_conditions conditions.OwnsText conditions.CanEditText user=user request=request obj=text as can_edit %}
+        {% if can_edit %}
+                <a href="{% url 'texts:text.edit' pk=text.pk %}">{% trans 'Edit Text' %}</a>
+        {% endif %}
 
-Pass to Template Context
-~~~~~~~~~~~~~~~~~~~~~~~~
+Draft implementation::
 
-The API would add another mixin and equivalent helper function, which would run
-a given tuple of Conditions and pass the results to the template context. The
-template writer can then use the results of these Conditions to filter what the
-user sees or determine whether to show a link based on whether it would be
-accessible to the current user.
+        from django import template
 
-*Note*:
 
-The original specification concept was for the developer to list inside a tuple
-attribute of the View class which conditions should have their results passed
-to the template context.  However, some very strong arguments have been made
-for giving Template writers access to all conditions in the form of tags. This
-solution, on the other hand, could cause some very unpredictable namespace
-conflicts. Community discussion on this has only just begun, and with luck
-should arrive on a solution in the months befor GSoC begins.
+        register = template.Library()
+
+
+        @register.simple_tag
+        def check_conditions(*conditions, **kwargs):
+                # TODO: What to do in case of no conditions?
+                for condition in conditions:
+                        result = condition.check(**kwargs)
+                        if not result:
+                                return False
+                return True
 
 Form Choices Filter
 ~~~~~~~~~~~~~~~~~~~
 
-The API would include another hook mixin that would be mixed into FormView (and
+The API would include another mixin that would be mixed into ``FormView`` (and
 its sub-classes) that would narrow all the members of the ``.queryset``'s of
 relational fields to ones that match a given Condition. This would be used, for
-example, on a CreateView, where the developer wants to limit the user to
+example, on a ``CreateView``, where the developer wants to limit the user to
 viewing and selecting instances of which they are the owner (as determined by a
-ForeignKey).
+``ForeignKey``).
 
 However, running a Condition against every instance in a queryset can quickly
 become very inefficient. For cases when it would be necessary, the mixin would
@@ -475,6 +462,17 @@ Rough implementation::
                         '''
                         return queryset
 
+Rationale
+=========
+
+An object-oriented design standard for the Conditions themselves (rather than a
+function-based one) was selected in order for the API to provide extendable
+default Conditions for common usage cases (e.g. permissions-based), as well as
+extendable common behavior (such as the message provided on failure).
+
+The reason for dividing conditions into "access" and "execute" conditions is to
+not give an attacker any information that they shouldn't have access to (e.g.
+whether an instance with a particular PK exists).
 
 Copyright
 =========
