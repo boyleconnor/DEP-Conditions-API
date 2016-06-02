@@ -126,7 +126,6 @@ From the developer's end, this would work as follows:
 MyApp/conditions.py::
 
         from django.contrib import conditions
-        # other imports
 
 
         class OwnsText(conditions.UserObjectCondition):
@@ -140,13 +139,13 @@ MyApp/views.py::
 
         from django.views import generic
         from django.contrib.conditions import mixins
-        from MyApp import models
         from MyApp import conditions
+        from MyApp.models import Text
 
 
         class EditTextView(mixins.RequiredConditionsMixin, generic.UpdateView):
-                model = models.Text
-                required_conditions = (conditions.CanEditText, conditions.OwnsText)
+                model = Text
+                execute_conditions = (conditions.CanEditText, conditions.OwnsText)
 
 As is probably fairly clear from the above code, a user attempting to access
 the above view would have to be listed as the owner of the Text in question (as
@@ -183,7 +182,7 @@ Simply put, it would be a data structure used to convey:
 It's implementation would look something like this::
 
         class ConditionResult:
-                def __init__(self, condition, passed, message=None, kwargs):
+                def __init__(self, condition, passed, kwargs, message=None):
                         self.condition = condition
                         self.passed = passed
                         self.message = message
@@ -225,7 +224,7 @@ BaseCondition's basic structure would be roughly as follows::
                         result = self.evaluate(**relevant_kwargs)
                         if result:
                                 return ConditionResult(passed=True, condition=self, kwargs=kwargs)
-                        return ConditionResult(passed=False, message=self.get_massage(**kwargs_to_check), condition=self, kwargs=kwargs)
+                        return ConditionResult(passed=False, message=self.get_message(**kwargs_to_check), condition=self, kwargs=kwargs)
 
 Put simply, ``check()`` provides a hook for the invoker of the condition to run
 the condition and return a ``ConditionResult``, by passing the keyword
@@ -235,21 +234,52 @@ of cases, would be either ``user`` or both ``user`` and ``object``).
 sub-classes for common usage cases) to override in order to define the
 meaningful logic of the condition.
 
-Combiners
-~~~~~~~~~~~
+ConditionCombiners
+~~~~~~~~~~~~~~~~~~
 
 There would also of course be classes for combining multiple conditions into
 one. The two "combiners" would be ``EveryCondition`` and ``AnyCondition``. They
 would each be sub-classes of ``BaseCondition`` and would act just like ordinary
 Conditions. Their ``evaluate()`` would go through a given iterable of
-Conditions, ``run()``-ing each one the appropriate kwargs. Their default
+Conditions, ``check()``-ing each one the appropriate kwargs. Their default
 ``get_message()`` would return a concatenation of all of the results of the
-``.message``'s of the results of said ``run()``-ing.
+``.message``'s of the results of said call of ``check()``.
 
 ``EveryCondition`` would only return ``True`` if all of its member Conditions
 return ``True``, while ``AnyCondition`` would return ``True`` if any of its
 member Conditions return ``True``.  The Condition combiners would of course be
 nestable.
+
+Draft implementation::
+
+        class ConditionCombiner(BaseCondition):
+                conditions = ()
+                booelan_func = None
+
+                def check(self, **kwargs):
+                        results = []
+                        for condition in self.conditions:
+                                results.append(condition.check(**kwargs))
+                        return ConditionResult(condition=self, message=self.get_message(results), passed=boolean_func(results), kwargs=kwargs)
+
+                def get_message(self, _results, **kwargs):
+                        joiner.join([result.message for result in _results])
+
+
+        class EveryCondition(BaseCondition):
+                boolean_func = all
+                joiner = '\nAND\n'
+
+
+        class AnyCondition(BaseCondition):
+                boolean_func = any
+                joiner = '\nOR\n'
+
+Notice that ``ConditionCombiner``—and therefore all of its sub-classes—do not
+utilize ``evaluate()`` as most developer-made (i.e. custom) Conditions would,
+due to the fact that the logic of ``get_message()`` is dependent on the value
+of ``.message`` in the ConditionResult's returned by the evaluation logic of
+the Condition Combiner.
 
 The Hooks
 ---------
@@ -318,16 +348,23 @@ developers to use for authorization in their function-based views:
         from django.core.exceptions import PermissionDenied
         from django.contrib.conditions.combiners import EveryCondition
 
+        def default_no_access_handler():
+                raise Http404
 
-        def check_conditions(condition_kwargs, access, execute):
+
+        def default_no_execute_handler(message):
+                raise PermissionDenied(message)
+
+
+        def check_conditions(condition_kwargs, access, execute, no_access_handler=default_no_access_handler, no_execute_handler=default_no_execute_handler):
                 for condition in access:
                         if not condition.run(**condition_kwargs):
-                                raise Http404
+                                no_access_handler()
                 results = []
                 execute_conditions = EveryCondition(conditions=execute)
                 execute_conditions_result = execute_conditions.check(**condition_kwargs)
                 if not execute_conditions_result.passed:
-                        raise PermissionDenied(execute_conditions_result.message)
+                        no_execute_handler(message=execute_conditions_result.message)
 
 2. ``@condition_protected``, a decorator whose functionality is primarily
    achieved by calling the above-described function.  It determines the value
