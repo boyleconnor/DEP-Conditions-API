@@ -61,8 +61,8 @@ and consistently.
 Potential Solutions from Other Packages
 =======================================
 
-A few other packages have attempted to solve this problem. Below are outlined
-their methods, as well as their key differences with this proposal.
+A few third-party packages have attempted to solve this problem. Below are
+outlined their methods, as well as their key differences with this proposal.
 
 Django Rest Framework
 ---------------------
@@ -81,12 +81,13 @@ evidenced by some of the default "Permissions" provided by the package, namely
 The problem with this design pattern (authentication based on HTTP method) is
 that it includes information about an action to determine whether a user is
 allowed to perform an application, breaking clean encapsulation that otherwise
-cleanly separates action from rule throughout the framework.
+separates action from rule throughout the framework.
 
 Django Rest Framework's permissions' encapsulation is further limited in that
-their rule-checking method must take ``view`` as argument, thus limiting each
-Permission's usability to authenticating in the context of a view (as opposed
-to, say, in a template to determine whether a link should be displayed).
+their rule-checking method must take ``view`` as an argument, thus limiting
+each Permission's usability to authenticating in the context of a view (as
+opposed to, say, in a template to determine whether a link should be
+displayed).
 
 Django Rules
 ------------
@@ -102,7 +103,8 @@ Django-Rules by setting it as one of the project's ``AUTHENTICATION_BACKENDS``.
 In order to use these "predicates" (Django-Rules's name for these dynamic
 conditions), they first must be registered with a ruleset and then–at least in
 their documented usage pattern–registered as permissions with Django-Rules's
-permissions backend.
+permissions backend. After that, they can simply be used just like permissions
+in Django's auth package.
 
 While the approach of treating "rules" as permissions is undeniably attractive,
 it is, however, extremely inconsistent with the existing concept of
@@ -116,24 +118,23 @@ Specification
 =============
 
 As described in the `Abstract`_, I propose a small new API tentatively named
-'Conditions'. Analogous to Django's Forms API and class-based Views, Conditions
-would often be related to particular models and/or views, but would still be
-written without any special knowledge of or relationship to how they will be
-used.
+'Conditions'. Like Django's Forms API and class-based Views, Conditions would
+often be related to particular models and/or views, but would still be written
+without any special knowledge of or relationship to how they will be used.
 
-From the developer's end, this would work as follows:
+From the developer's end, it would be used as follows:
 
 MyApp/conditions.py::
 
         from django.contrib import conditions
 
 
-        class OwnsText(conditions.UserObjectCondition):
-                def evaluate(self, user, object):
-                        return object.owner == user
+        class OwnsText(conditions.Condition):
+                def evaluate(self, user, obj):
+                        return obj.owner == user
 
         class CanEditText(conditions.UserPermissionCondition):
-                permissions = ('translations.change_text',)
+                permission = 'translations.change_text'
 
 MyApp/views.py::
 
@@ -147,8 +148,8 @@ MyApp/views.py::
                 model = Text
                 execute_conditions = (conditions.CanEditText, conditions.OwnsText)
 
-As is probably fairly clear from the above code, a user attempting to access
-the above view would have to be listed as the owner of the Text in question (as
+As should be clear from the above code, a user attempting to access the above
+view would have to be listed as the owner of the Text in question (as
 represented by the value of its ``.owner`` ForeignKey), and be assigned the
 ``'translations.change_text'`` permission according to auth.  Otherwise, (if
 the following behavior is not overridden by the developer) it will raise a
@@ -160,7 +161,7 @@ Raising ``PermissionDenied`` is, of course, a security issue in certain cases.
 Therefore, when appropriate, conditions required to perform an action will be
 divided into 'access' conditions and 'execute' conditions. The 'access'
 conditions must be passed first or else the attempted action will result in a
-mere "Page not found" or equivalent appropriate error.
+mere "Page not found" error.
 
 Implementation
 ==============
@@ -171,15 +172,16 @@ The Core
 ConditionResults
 ~~~~~~~~~~~~~~~~
 
-``ConditionResult`` would be the simplest concept/code introduced in the API.
-Simply put, it would be a data structure used to convey:
+``ConditionResult`` would be the most straightforward concept and piece of code
+introduced in the API.  Simply put, it would be a data structure used to
+convey:
 
 - A boolean value of ``True`` or ``False`` to indicate a pass or fail,
 - A message in a string in the case of a fail,
 - A link to the condition that produced it, and
 - The keyword arguments with which it was run.
   
-It's implementation would look something like this::
+It's implementation would be approximately as follows::
 
         class ConditionResult:
                 def __init__(self, condition, passed, kwargs, message=None):
@@ -194,21 +196,38 @@ It's implementation would look something like this::
                 def __str__(self):
                         return self.message
 
-Conditions
-~~~~~~~~~~~~~~~~~~~~
+BaseCondition
+~~~~~~~~~~~~~
 
-Conditions would all be sub-classes of one super-class, BaseCondition.
-BaseCondition's basic structure would be roughly as follows::
+Anything that is a Condition or acts like it would be a sub-class of one
+(essentially abstract) superclass: BaseCondition. BaseCondition's basic
+structure (and therefore the structure of all Conditions) would be roughly as
+follows::
 
         class BaseCondition:
                 message = ''
-                kwargs = None
 
                 def get_message(self, **kwargs):
                         if message:
                                 return message
                         raise NotImlementedError()
 
+                def check(self, **kwargs):
+                        return NotImplementedError()
+
+Condition
+~~~~~~~~~
+
+In order to simplify the process of custom Conditions, the developer is
+encouraged to write their Conditions as subclasses of ``Condition``, itself a
+subclass of ``BaseCondition``. It simplifies the work of the developer; instead
+of writing a method that returns a ``ConditionResult`` filled with the
+appropriate message, the developer only needs to provide an ``evaluate()`` that
+returns a boolean, and a proper definition of ``get_message()`` if appropriate.
+
+Draft implementation::
+
+        class Condition(BaseCondition):
                 def evaluate(self, **kwargs):
                         raise NotImplementedError()
 
@@ -226,24 +245,25 @@ BaseCondition's basic structure would be roughly as follows::
                                 return ConditionResult(passed=True, condition=self, kwargs=kwargs)
                         return ConditionResult(passed=False, message=self.get_message(**kwargs_to_check), condition=self, kwargs=kwargs)
 
-Put simply, ``check()`` provides a hook for the invoker of the condition to run
-the condition and return a ``ConditionResult``, by passing the keyword
+In other words, ``check()`` provides a hook for the invoker of the condition to
+run the condition and return a ``ConditionResult``, by passing the keyword
 arguments necessary for the condition to evaluate (which, in the vast majority
 of cases, would be either ``user`` or both ``user`` and ``object``).
-``evaluate()``, on the other hand, would be a hook for the developer (or
-sub-classes for common usage cases) to override in order to define the
+``evaluate()``, on the other hand, is a hook for the developer (or provided
+subclasses for common usage cases) to override in order to define the
 meaningful logic of the condition.
 
 ConditionCombiners
 ~~~~~~~~~~~~~~~~~~
 
-There would also of course be classes for combining multiple conditions into
-one. The two "combiners" would be ``EveryCondition`` and ``AnyCondition``. They
-would each be sub-classes of ``BaseCondition`` and would act just like ordinary
-Conditions. Their ``evaluate()`` would go through a given iterable of
-Conditions, ``check()``-ing each one the appropriate kwargs. Their default
-``get_message()`` would return a concatenation of all of the results of the
-``.message``'s of the results of said call of ``check()``.
+There would also of course be Conditions that simply combine other Conditions
+as if with a boolean operator. The two "combiners" provided by this proposal
+would be ``EveryCondition`` and ``AnyCondition``. They would each be
+sub-classes of ``BaseCondition`` and would act just like ordinary Conditions.
+Their ``evaluate()`` would go through a given iterable of Conditions,
+``check()``-ing each one the appropriate kwargs. The ``.message`` of the
+CondtionResults that they return would by default be a concatenation of all of
+the results of the ``.message``'s of the results of said call of ``check()``.
 
 ``EveryCondition`` would only return ``True`` if all of its member Conditions
 return ``True``, while ``AnyCondition`` would return ``True`` if any of its
@@ -259,11 +279,11 @@ Draft implementation::
                 def check(self, **kwargs):
                         results = []
                         for condition in self.conditions:
-                                results.append(condition.check(**kwargs))
+                                results.append(condition().check(**kwargs))
                         return ConditionResult(condition=self, message=self.get_message(results), passed=boolean_func(results), kwargs=kwargs)
 
-                def get_message(self, _results, **kwargs):
-                        joiner.join([result.message for result in _results])
+                def get_message(self, results): # TODO: Does it really make sense to override and call get_message()?
+                        joiner.join([result.message for result in results])
 
 
         class EveryCondition(BaseCondition):
@@ -275,8 +295,8 @@ Draft implementation::
                 boolean_func = any
                 joiner = '\nOR\n'
 
-Notice that ``ConditionCombiner``—and therefore all of its sub-classes—do not
-utilize ``evaluate()`` as most developer-made (i.e. custom) Conditions would,
+Notice that ``ConditionCombiner`` —and therefore its sub-classes—does *not*
+override ``evaluate()`` as most developer-made (i.e. custom) Conditions would,
 due to the fact that the logic of ``get_message()`` is dependent on the value
 of ``.message`` in the ConditionResult's returned by the evaluation logic of
 the Condition Combiner.
@@ -284,43 +304,21 @@ the Condition Combiner.
 The Hooks
 ---------
 
-Class-based View Mixins
-~~~~~~~~~~~~~~~~~~~~~~~
-
-The first tie-in/hook to the core of the Conditions API would be mixins for the
-Django's generic class-based views. There would be multiple different mixins to
-be mixed-in variously depending on whether the class-based view its being mixed
-into has a ``get_object()`` method (that actually gets called) or not. The
-developer would provide the Conditions they want checked in two tuples,
-``access_conditions`` and ``execute_conditions``. If any Condition in
-``access_conditions`` fails, the view would by default return a 404 (page not
-found). If those pass, but a Condition in ``execute_conditions`` fails, the
-view would by default return a 403 (permission denied).
-
-In order to reduce the amount of research and trial-and-error required of
-developers, the API would provide special sub-classes of the generic views with
-the appropriate mixin already mixed in.
-
-Exactly what happens when the Conditions fail could be dictated by the
-developer by overriding the ``condition_fail()`` method, whose default behavior
-would be cannibalized from Django's own ``AuthMixin`` and could also be
-customized by modifying attributes of the view.
-
 Helper Function
 ~~~~~~~~~~~~~~~
 
 As for function-based views, since Conditions are essentially just fancy
 functions, developers could easily write their own code that utilizes their
-conditions. The API, however, *would* provide a helper function that would run
-the given Condition(s) and handle the Auth-related issues (redirect to login,
-etc.) on failure. It would also allow the developer to provide callback
-functions to modify default behavior.
+conditions. The API, however, would provide a helper function that would run
+the given Condition(s) and handle the Auth-related issues (raise
+``PermissionDenied``, etc.) on failure. It would also allow the developer to
+provide callback functions to modify default behavior.
 
 Django-Rules's technique of using a decorator presents issues when the
 function-based view at hand gets an object (e.g. a Model instance from the
-ORM), as this object is not accessible to the decorator. Django-rules has
-overcome this by allowing the developer to provide a function (as a callback)
-that returns the necessary object.
+ORM), as this object is not accessible to the decorator. Django-rules solved
+this by allowing the developer to provide a function (as a callback) that
+returns the necessary object.
 
 This causes its own problems, though. First, a model instance will have to be
 retrieved from the database twice–an unacceptable performance cost. Second–and
@@ -410,6 +408,69 @@ Reference Implementation::
                         return view(request, *args, **kwargs)
                 return wrapped_view
 
+Class-based View Mixins
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The next tie-in/hook to the core of the Conditions API would be mixins for the
+Django's generic class-based views. There would be multiple different mixins to
+be mixed-in variously depending on whether the class-based view its being mixed
+into has a ``get_object()`` method (that actually gets called) or not. The
+developer would provide the Conditions they want checked in two tuples,
+``access_conditions`` and ``execute_conditions``. If any Condition in
+``access_conditions`` fails, the view would by default return a 404 (page not
+found). If those pass, but a Condition in ``execute_conditions`` fails, the
+view would by default return a 403 (permission denied).
+
+In order to reduce the amount of research and trial-and-error required of
+developers, the API would provide special sub-classes of the generic views with
+the appropriate mixin already mixed in.
+
+Exactly what happens when the Conditions fail could be dictated by the
+developer by overriding the ``no_access()`` and ``no_execute()`` methods, whose
+default behaviors, respectively, would be to raise ``Http404`` or
+``PermissionDenied`` with the appropriate message.
+
+Draft implementation::
+
+        from django.conf import settings
+        from django.views.generic.detail import SingleObjectMixin
+
+
+        class ConditionsMixin:
+                access_conditions = ()
+                execute_conditions = ()
+
+                def get_condition_kwargs(self, request, *args, **kwargs):
+                        condition_kwargs = {'request': request}
+                        if 'django.contrib.sessions.middleware.SessionMiddleware' in settings.MIDDLEWARE_CLASSES:
+                                condition_kwargs['session'] = request.session
+                                if 'django.contrib.auth.middleware.AuthenticationMiddleware' in settings.MIDDLEWARE_CLASSES:
+                                        condition_kwargs['user'] = request.user
+                        return condition_kwargs
+
+                def no_access(self):
+                        raise Http404
+
+                def no_execute(self, results):
+                        raise PermissionDenied(
+
+                def can_check_object_conditions(self):
+                        return issubclass(self.__class__, SingleObjectMixin)
+
+                def dispatch(self, request, *args, **kwargs):
+                        if not self.can_check_object_conditions():
+                                condition_kwargs = self.get_condition_kwargs(request)
+                                check_conditions(condition_kwargs, self.access_conditions, self.execute_conditions, no_access_handler=self.no_access, no_execute_handler=self.no_execute)
+                        return super(ConditionsMixin, self).dispatch(request, *args, **kwargs)
+
+                def get_object(self, *args, **kwargs):
+                        obj = super(ConditionsMixin, self).get_object(*args, **kwargs)
+                        if self.can_check_object_conditions():
+                                condition_kwargs = self.get_condition_kwargs(request)
+                                condition_kwargs['obj'] = obj
+                                check_conditions(condition_kwargs, self.access_conditions, self.execute_conditions, no_access_handler=self.no_access, no_execute_handler=self.no_execute)
+                        return obj
+
 Template Tags
 ~~~~~~~~~~~~~
 
@@ -417,7 +478,7 @@ The project would include template tags that would allow the developer to test
 their conditions within their templates. Like the view mixin or the view
 decorator, the tag would accept a series of Conditions, which would then all be
 tested. The keyword arguments that Conditions must be given in order to pass
-may be provided as keyword arguments in the tag. In all pracdtical cases, the
+may be provided as keyword arguments in the tag. In all practical cases, the
 developer would utilize the result by storing it in a template context variable
 using the ``as`` keyword.
 
@@ -427,16 +488,22 @@ template context on a per-view basis. However, because this technique
 necessarily increases coupling of views and templates, this project will
 include and through documentation prescribe the use of a template context
 processor. Said context processor will work by going through each member of
-``INSTALLED_APPS``, and from each one's ``.conditions`` module including every
-object that is a subtype of ``BaseCondition`` in a dictionary ``conditions``.
+``INSTALLED_APPS``, and from each one's ``conditions.py`` module including
+every object that is a subtype of ``BaseCondition`` in a dictionary
+``conditions``.
          
 Example usage::
+
+        {% load conditions %}
+
         {% check_conditions conditions.OwnsText conditions.CanEditText user=user request=request obj=text as can_edit %}
         {% if can_edit %}
                 <a href="{% url 'texts:text.edit' pk=text.pk %}">{% trans 'Edit Text' %}</a>
         {% endif %}
 
-Draft implementation::
+Draft implementation:
+
+Template Tag::
 
         from django import template
 
@@ -452,6 +519,11 @@ Draft implementation::
                         if not result:
                                 return False
                 return True
+
+Context Processor::
+
+        def conditions(request):
+                
 
 Form Choices Filter
 ~~~~~~~~~~~~~~~~~~~
@@ -510,6 +582,44 @@ extendable common behavior (such as the message provided on failure).
 The reason for dividing conditions into "access" and "execute" conditions is to
 not give an attacker any information that they shouldn't have access to (e.g.
 whether an instance with a particular PK exists).
+
+Undecided
+=========
+
+The following items are under consideration for inclusion with the proposal:
+
+QuerySet-Based Conditions
+-------------------------
+
+This proposal could potentially include a common-usage case subclass of ``Condition`` called ``QuerySetCondition``.
+
+Example implementation::
+
+        class QuerySetCondition(BaseCondition):
+                queryset = None
+                inclusive = True
+
+                def get_queryset(self, **kwargs):
+                        if self.queryset:
+                                return self.queryset
+                        raise NotImplementedError()
+
+                def evaluate(self, obj, **kwargs):
+                        return obj in self.get_queryset(**kwargs)
+
+Reasons against:
+
+- Reduces orthogonality; QuerySet-based Conditions would be dependent on the
+  Django ORM where no other Condition was.
+- Inefficient evaluation; evaluating a Condition written like this would
+  requiring actually querying the database and checking that a given instance
+  is in said queryset, which could take significantly more time than merely
+  evaluating an attribute of a Python object.
+- Technically there is no guarantee that an object that evaluates to ``True``
+  is actually a member of the result of ``get_queryset()`` in a developer's
+  subclass of ``QuerySetCondition`` (or the opposite). One of those depends on
+  the result of ``evaluate()``, which could easily be overridden, while the
+  other depends on the result of ``get_queryset()``.
 
 Copyright
 =========
