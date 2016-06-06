@@ -201,24 +201,19 @@ BaseCondition
 
 Anything that is a Condition or acts like it would be a sub-class of one
 (essentially abstract) superclass: BaseCondition. BaseCondition's basic
-structure (and therefore the structure of all Conditions) would be roughly as
-follows::
+structure (and therefore the structure of all Conditions) would be as follows::
 
         class BaseCondition:
-                message = ''
-
-                def get_message(self, **kwargs):
-                        if message:
-                                return message
-                        raise NotImlementedError()
-
                 def check(self, **kwargs):
                         return NotImplementedError()
+
+Ultimately, it is up to subclasses of ``BaseCondition`` to define the logic
+behind ``check()``, which must return a ``ConditionResult``.
 
 Condition
 ~~~~~~~~~
 
-In order to simplify the process of custom Conditions, the developer is
+In order to simplify the structure of custom Conditions, the developer is
 encouraged to write their Conditions as subclasses of ``Condition``, itself a
 subclass of ``BaseCondition``. It simplifies the work of the developer; instead
 of writing a method that returns a ``ConditionResult`` filled with the
@@ -228,6 +223,13 @@ returns a boolean, and a proper definition of ``get_message()`` if appropriate.
 Draft implementation::
 
         class Condition(BaseCondition):
+                message = ''
+
+                def get_message(self, **kwargs):
+                        if message:
+                                return message
+                        raise NotImlementedError()
+
                 def evaluate(self, **kwargs):
                         raise NotImplementedError()
 
@@ -253,8 +255,8 @@ of cases, would be either ``user`` or both ``user`` and ``object``).
 subclasses for common usage cases) to override in order to define the
 meaningful logic of the condition.
 
-ConditionCombiners
-~~~~~~~~~~~~~~~~~~
+ConditionCombiner
+~~~~~~~~~~~~~~~~~
 
 There would also of course be Conditions that simply combine other Conditions
 as if with a boolean operator. The two "combiners" provided by this proposal
@@ -283,17 +285,17 @@ Draft implementation::
                         return ConditionResult(condition=self, message=self.get_message(results), passed=boolean_func(results), kwargs=kwargs)
 
                 def get_message(self, results): # TODO: Does it really make sense to override and call get_message()?
-                        joiner.join([result.message for result in results])
+                        self.message_joiner.join([result.message for result in results])
 
 
         class EveryCondition(BaseCondition):
                 boolean_func = all
-                joiner = '\nAND\n'
+                message_joiner = '\nAND\n'
 
 
         class AnyCondition(BaseCondition):
                 boolean_func = any
-                joiner = '\nOR\n'
+                message_joiner = '\nOR\n'
 
 Notice that ``ConditionCombiner`` —and therefore its sub-classes—does *not*
 override ``evaluate()`` as most developer-made (i.e. custom) Conditions would,
@@ -326,10 +328,10 @@ more importantly–it forces the developer to twice define their logic for
 retrieving that object. An experienced developer can mitigate some of the
 issues that this pattern raises by having both the in-view logic and the
 permissions-related callback both refer to a third function to get the job
-done. However, this adds unnecesssary complication and is not prescribed by the
-documentation.
+done. However, this adds unnecesssary complication and is not even prescribed
+by Django-Rules's documentation.
 
-Given these drawbacks, this proposal would instead bring in two options for
+Given these drawbacks, this proposal would instead include two options for
 developers to use for authorization in their function-based views:
 
 1. ``check_conditions()``, a function for the developer to call in their
@@ -370,10 +372,10 @@ developers to use for authorization in their function-based views:
    the parameter ``get_kwargs``. Unlike in Django-Rules's version, however, the
    result of ``get_kwargs`` is then passed to the wrapped function-based view.
    Through this pattern, the object needn't be retrieved from the database
-   twice, and the problems that could arise from a technique involving
+   twice, and the myriad issues that could arise from a technique involving
    duplication of logic are mitigated because there is no duplication.
 
-    It would be used as in the following example::
+   It would be used as in the following example::
 
         from django.contrib.conditions.decorators import check_conditions
         from django.shortcuts import get_object_object_or_404
@@ -386,7 +388,7 @@ developers to use for authorization in their function-based views:
 
         @condition_protected(access=(IsAuthenticated,), execute=(InClub,), get_kwargs=get_club)
         def club_detail(request, club):
-                pass
+                return render(request, 'club_detail.html', context={'club': club}
 
 Reference Implementation::
 
@@ -482,21 +484,21 @@ may be provided as keyword arguments in the tag. In all practical cases, the
 developer would utilize the result by storing it in a template context variable
 using the ``as`` keyword.
 
-In order for these Conditions (the Condtions themselves, not their results) to
+In order for these Conditions (the Conditions themselves, not their results) to
 be accessible within the template context, Conditions could be passed to the
 template context on a per-view basis. However, because this technique
 necessarily increases coupling of views and templates, this project will
 include and through documentation prescribe the use of a template context
 processor. Said context processor will work by going through each member of
 ``INSTALLED_APPS``, and from each one's ``conditions.py`` module including
-every object that is a subtype of ``BaseCondition`` in a dictionary
+every object that is a subclass of ``BaseCondition`` in a dictionary
 ``conditions``.
          
 Example usage::
 
         {% load conditions %}
 
-        {% check_conditions conditions.OwnsText conditions.CanEditText user=user request=request obj=text as can_edit %}
+        {% check_conditions conditions.Texts.OwnsText conditions.Texts.CanEditText user=user request=request obj=text as can_edit %}
         {% if can_edit %}
                 <a href="{% url 'texts:text.edit' pk=text.pk %}">{% trans 'Edit Text' %}</a>
         {% endif %}
@@ -522,8 +524,20 @@ Template Tag::
 
 Context Processor::
 
+        from importlib import import_module
+        from django.conf import settings
+        from django.contrib.conditions import BaseCondition
+
+
         def conditions(request):
-                
+                conditions = {}
+                for app_name in settings.INSTALLED_APPS:
+                        conditions[app_name] = {}
+                        app = import_module(app_name)
+                        for attr_name in app.__all__:
+                                attr = getattr(app, attr)
+                                if issubclass(attr.__class_, BaseCondition):
+                                        conditions[app_name][attr_name] = attr
 
 Form Choices Filter
 ~~~~~~~~~~~~~~~~~~~
@@ -591,11 +605,17 @@ The following items are under consideration for inclusion with the proposal:
 QuerySet-Based Conditions
 -------------------------
 
-This proposal could potentially include a common-usage case subclass of ``Condition`` called ``QuerySetCondition``.
+This proposal could potentially include a common-usage case subclass of
+``Condition`` called ``QuerySetCondition``. Its default functionality would be
+to check that an object is a member of a given queryset (one that can be
+generated statically or dynamically based on the values of keyword arguments
+it's passed. This would primarily be useful in that it would allow efficient
+generation of a queryset that meets a given set of Conditions, which would in
+turn be very useful for populating the options on a ``ModelChoices`` field.
 
 Example implementation::
 
-        class QuerySetCondition(BaseCondition):
+        class QuerySetCondition(Condition):
                 queryset = None
                 inclusive = True
 
